@@ -227,8 +227,8 @@ Ensure PostgreSQL is running locally.
 
 Your project should now:
 
-Fetch data
-Store in PostgreSQL
-Compute metrics
-Show interactive charts
+Fetch data, 
+Store in PostgreSQL, 
+Compute metrics, 
+Show interactive charts and 
 Running inside Docker
