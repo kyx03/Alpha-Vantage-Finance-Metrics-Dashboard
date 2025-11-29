@@ -1,0 +1,28 @@
+{
+  "name": "windborne-assignment",
+  "version": "1.0.0",
+  "description": "Junior Finance Automation Engineer Take-Home Assignment",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2",
+    "pg": "^8.11.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "keywords": [
+    "finance",
+    "dashboard",
+    "AlphaVantage",
+    "PostgreSQL",
+    "NodeJS"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}

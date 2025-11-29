@@ -1,5 +1,4 @@
-# Alpha-Vantage-Finance-Metrics-Dashboard
-
+Finance Metrics Dashboard
 A full-stack ETL + analytics project using:
 Node.js / Express (API + ETL orchestrator)
 PostgreSQL (Docker) (data warehouse)
@@ -227,8 +226,8 @@ Ensure PostgreSQL is running locally.
 
 Your project should now:
 
-Fetch data, 
-Store in PostgreSQL, 
-Compute metrics, 
-Show interactive charts and 
+Fetch data
+Store in PostgreSQL
+Compute metrics
+Show interactive charts
 Running inside Docker
