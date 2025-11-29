@@ -1,20 +1,6 @@
 {
   "version": 2,
-  "builds": [
-    { "src": "api/**/*.js", "use": "@vercel/node" }
-  ],
-  "routes": [
-    {
-      "src": "/",
-      "dest": "/dashboard.html"
-    },
-    {
-      "src": "/load",
-      "dest": "/api/load.js"
-    },
-    {
-      "src": "/metrics",
-      "dest": "/api/metrics.js"
-    }
+  "rewrites": [
+    { "source": "/", "destination": "/dashboard.html" }
   ]
 }
