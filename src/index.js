@@ -3,7 +3,7 @@
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { query, pool } from "./db/connection.js";   // <-- FIXED (pool added)
+import { query, pool } from "./db/connection.js"; 
 import { fetchStatement } from "./services/alphaVantage.js";
 
 const app = express();
@@ -11,10 +11,12 @@ app.use(express.json());
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Helper to safely parse numeric strings from Alpha Vantage
-function safeNumber(str) {
-  if (!str) return 0;
-  return Number(str.toString().replace(/,/g,'')) || 0;
+// ---------------------------
+// Helper: safely convert string numbers to Number
+// ---------------------------
+function safeNumber(value) {
+  if (!value) return 0;
+  return Number(String(value).replace(/,/g, "")) || 0;
 }
 
 // ---------------------------
@@ -55,32 +57,31 @@ app.get("/load", async (req, res) => {
           const year = parseInt(income.annualReports[i].fiscalDateEnding.slice(0, 4));
           if (year < yearLimit) continue;
 
-          // Find matching balance report by fiscal year
+          // Match balance sheet by fiscal year
           const balanceReport = balance.annualReports.find(
             r => parseInt(r.fiscalDateEnding.slice(0,4)) === year
           );
-          if (!balanceReport) continue;
+          if (!balanceReport) {
+            console.log(`Skipping ${symbol} ${year} due to missing balance report`);
+            continue;
+          }
 
           const revenue = safeNumber(income.annualReports[i].totalRevenue);
           const netIncome = safeNumber(income.annualReports[i].netIncome);
           const totalAssets = safeNumber(balanceReport.totalAssets);
           const totalLiabilities = safeNumber(balanceReport.totalLiabilities);
 
-          try {
-            await query(
-              `INSERT INTO financial_statements
-               (company_id, fiscal_year, revenue, net_income, total_assets, total_liabilities)
-               VALUES ($1,$2,$3,$4,$5,$6)
-               ON CONFLICT (company_id, fiscal_year) DO UPDATE SET
-                  revenue = EXCLUDED.revenue,
-                  net_income = EXCLUDED.net_income,
-                  total_assets = EXCLUDED.total_assets,
-                  total_liabilities = EXCLUDED.total_liabilities`,
-              [companyId, year, revenue, netIncome, totalAssets, totalLiabilities]
-            );
-          } catch(err) {
-            console.error(`Failed inserting ${symbol} ${year}:`, err.message);
-          }
+          await query(
+            `INSERT INTO financial_statements
+             (company_id, fiscal_year, revenue, net_income, total_assets, total_liabilities)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (company_id, fiscal_year) DO UPDATE SET
+                revenue = EXCLUDED.revenue,
+                net_income = EXCLUDED.net_income,
+                total_assets = EXCLUDED.total_assets,
+                total_liabilities = EXCLUDED.total_liabilities`,
+            [companyId, year, revenue, netIncome, totalAssets, totalLiabilities]
+          );
         }
 
         console.log(`${symbol}: Data loaded successfully`);
@@ -92,9 +93,7 @@ app.get("/load", async (req, res) => {
       await new Promise((r) => setTimeout(r, 15000));
     }
 
-    // ---------------------------
     // Save ETL timestamp AFTER all companies are processed
-    // ---------------------------
     await pool.query("INSERT INTO etl_runs (run_timestamp) VALUES (NOW())");
 
     res.send("Data loaded");
@@ -105,7 +104,7 @@ app.get("/load", async (req, res) => {
 });
 
 // ---------------------------
-// /etl/last endpoint
+// /etl-last-run endpoint
 // Returns last ETL timestamp
 // ---------------------------
 app.get("/etl-last-run", async (req, res) => {
@@ -116,9 +115,7 @@ app.get("/etl-last-run", async (req, res) => {
       ORDER BY run_timestamp DESC
       LIMIT 1
     `);
-    if (result.rows.length === 0) {
-      return res.json({ lastRun: null });
-    }
+    if (result.rows.length === 0) return res.json({ lastRun: null });
     res.json({ lastRun: result.rows[0].run_timestamp });
   } catch (err) {
     console.error("Error fetching last ETL run:", err);
