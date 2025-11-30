@@ -1,21 +1,34 @@
 // src/index.js
-
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { query, pool } from "./db/connection.js";
+import pkg from "pg";
 import { fetchStatement } from "./services/alphaVantage.js";
 
+const { Pool } = pkg;
 const app = express();
 app.use(express.json());
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Helper: safely parse numbers
-const safeNum = (val) => {
-  const n = Number(val);
-  return isNaN(n) ? 0 : n;
-};
+// ---------------------------
+// DATABASE POOL
+// ---------------------------
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false } // required for Render Postgres
+});
+
+// helper query function
+async function query(text, params) {
+  const client = await pool.connect();
+  try {
+    const res = await client.query(text, params);
+    return res;
+  } finally {
+    client.release();
+  }
+}
 
 // ---------------------------
 // /load endpoint
@@ -32,19 +45,13 @@ app.get("/load", async (req, res) => {
         const balance = await fetchStatement(symbol, "balance");
         const cashflow = await fetchStatement(symbol, "cashflow");
 
-        // Check for API rate limit or missing reports
-        if (!income?.annualReports?.length || !balance?.annualReports?.length) {
-          console.log(`${symbol}: Missing annualReports or API rate-limited`);
-          continue;
-        }
-        if (income.Note || balance.Note || cashflow.Note) {
-          console.log(`${symbol}: API rate limit note detected, skipping`);
+        if (!income?.annualReports || !balance?.annualReports) {
+          console.log(`${symbol}: No data from API`);
           continue;
         }
 
-        // Insert company or get existing
         const companyRes = await query(
-          `INSERT INTO companies (symbol, name)
+          `INSERT INTO companies (symbol, name) 
            VALUES ($1, $2)
            ON CONFLICT (symbol) DO UPDATE SET name = EXCLUDED.name
            RETURNING id`,
@@ -52,43 +59,26 @@ app.get("/load", async (req, res) => {
         );
         const companyId = companyRes.rows[0].id;
 
-        // Insert financial statements for last 3 years
-        for (const incomeReport of income.annualReports) {
-          const year = parseInt(incomeReport.fiscalDateEnding.slice(0, 4));
+        for (let i = 0; i < income.annualReports.length; i++) {
+          const year = parseInt(income.annualReports[i].fiscalDateEnding.slice(0, 4));
           if (year < yearLimit) continue;
 
-          const balanceReport = balance.annualReports.find(
-            (r) => r.fiscalDateEnding.slice(0, 4) === year.toString()
+          const revenue = parseInt(income.annualReports[i].totalRevenue) || 0;
+          const netIncome = parseInt(income.annualReports[i].netIncome) || 0;
+          const totalAssets = parseInt(balance.annualReports[i].totalAssets) || 0;
+          const totalLiabilities = parseInt(balance.annualReports[i].totalLiabilities) || 0;
+
+          await query(
+            `INSERT INTO financial_statements
+             (company_id, fiscal_year, revenue, net_income, total_assets, total_liabilities)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (company_id, fiscal_year) DO UPDATE SET
+                revenue = EXCLUDED.revenue,
+                net_income = EXCLUDED.net_income,
+                total_assets = EXCLUDED.total_assets,
+                total_liabilities = EXCLUDED.total_liabilities`,
+            [companyId, year, revenue, netIncome, totalAssets, totalLiabilities]
           );
-          if (!balanceReport) {
-            console.log(`${symbol} ${year}: No matching balance report`);
-            continue;
-          }
-
-          const revenue = safeNum(incomeReport.totalRevenue);
-          const netIncome = safeNum(incomeReport.netIncome);
-          const totalAssets = safeNum(balanceReport.totalAssets);
-          const totalLiabilities = safeNum(balanceReport.totalLiabilities);
-
-          console.log(
-            `Inserting: ${symbol} ${year} revenue=${revenue} netIncome=${netIncome} totalAssets=${totalAssets} totalLiabilities=${totalLiabilities}`
-          );
-
-          try {
-            await query(
-              `INSERT INTO financial_statements
-               (company_id, fiscal_year, revenue, net_income, total_assets, total_liabilities)
-               VALUES ($1,$2,$3,$4,$5,$6)
-               ON CONFLICT (company_id, fiscal_year) DO UPDATE SET
-                 revenue = EXCLUDED.revenue,
-                 net_income = EXCLUDED.net_income,
-                 total_assets = EXCLUDED.total_assets,
-                 total_liabilities = EXCLUDED.total_liabilities`,
-              [companyId, year, revenue, netIncome, totalAssets, totalLiabilities]
-            );
-          } catch (err) {
-            console.error(`${symbol} ${year}: DB insert failed`, err.message);
-          }
         }
 
         console.log(`${symbol}: Data loaded successfully`);
@@ -96,11 +86,9 @@ app.get("/load", async (req, res) => {
         console.error(`Error loading ${symbol}:`, err.message);
       }
 
-      // Delay to avoid free-tier API limits
-      await new Promise((r) => setTimeout(r, 15000));
+      await new Promise((r) => setTimeout(r, 15000)); // API rate limit
     }
 
-    // Save ETL run timestamp
     await pool.query("INSERT INTO etl_runs (run_timestamp) VALUES (NOW())");
     res.send("Data loaded");
   } catch (err) {
@@ -141,8 +129,8 @@ app.get("/metrics", async (req, res) => {
 
     const rows = result.rows;
 
-    const metrics = rows.map((row) => {
-      const prev = rows.find(
+    const metrics = rows.map((row, i, arr) => {
+      const prev = arr.find(
         (r) => r.symbol === row.symbol && r.fiscal_year === row.fiscal_year - 1
       );
 
