@@ -3,7 +3,7 @@
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { query, pool } from "./db/connection.js"; 
+import { query, pool } from "./db/connection.js";
 import { fetchStatement } from "./services/alphaVantage.js";
 
 const app = express();
@@ -11,91 +11,84 @@ app.use(express.json());
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ---------------------------
-// Helper: safely convert string numbers to Number
-// ---------------------------
-function safeNumber(value) {
-  if (!value) return 0;
-  return Number(String(value).replace(/,/g, "")) || 0;
-}
+// Helper: safely parse numbers
+const safeNum = (val) => {
+  const n = Number(val);
+  return isNaN(n) ? 0 : n;
+};
 
-// ---------------------------
 // ---------------------------
 // /load endpoint
-// Fetch financial statements from Alpha Vantage and insert into PostgreSQL
 // ---------------------------
 app.get("/load", async (req, res) => {
-  const symbols = ["TEL", "ST", "DD"]; // companies to load
+  const symbols = ["TEL", "ST", "DD"];
   const currentYear = new Date().getFullYear();
-  const yearLimit = currentYear - 3; // last 3 years
-
-  // Helper: safely convert string/number to numeric value
-  const safeNum = (str) => {
-    if (!str) return 0;
-    if (typeof str === "number") return str;
-    // remove commas, then convert
-    const n = Number(str.replace(/,/g, ""));
-    return isNaN(n) ? 0 : n;
-  };
+  const yearLimit = currentYear - 3;
 
   try {
     for (let symbol of symbols) {
       try {
-        // Fetch statements
         const income = await fetchStatement(symbol, "income");
         const balance = await fetchStatement(symbol, "balance");
         const cashflow = await fetchStatement(symbol, "cashflow");
 
-        // Validate API responses
-        if (!income?.annualReports || !balance?.annualReports) {
-          console.log(`${symbol}: No data returned from API`);
+        // Check for API rate limit or missing reports
+        if (!income?.annualReports?.length || !balance?.annualReports?.length) {
+          console.log(`${symbol}: Missing annualReports or API rate-limited`);
+          continue;
+        }
+        if (income.Note || balance.Note || cashflow.Note) {
+          console.log(`${symbol}: API rate limit note detected, skipping`);
           continue;
         }
 
         // Insert company or get existing
         const companyRes = await query(
-          `INSERT INTO companies (symbol, name) 
-           VALUES ($1, $2) 
-           ON CONFLICT (symbol) DO UPDATE SET name = EXCLUDED.name 
+          `INSERT INTO companies (symbol, name)
+           VALUES ($1, $2)
+           ON CONFLICT (symbol) DO UPDATE SET name = EXCLUDED.name
            RETURNING id`,
           [symbol, symbol]
         );
         const companyId = companyRes.rows[0].id;
 
-        // Insert financial statements (last 3 years)
-        for (let i = 0; i < income.annualReports.length; i++) {
-          const year = parseInt(income.annualReports[i].fiscalDateEnding.slice(0, 4));
+        // Insert financial statements for last 3 years
+        for (const incomeReport of income.annualReports) {
+          const year = parseInt(incomeReport.fiscalDateEnding.slice(0, 4));
           if (year < yearLimit) continue;
 
-          // Match balance sheet by fiscal year
           const balanceReport = balance.annualReports.find(
-            (r) => parseInt(r.fiscalDateEnding.slice(0, 4)) === year
+            (r) => r.fiscalDateEnding.slice(0, 4) === year.toString()
           );
           if (!balanceReport) {
-            console.log(`Skipping ${symbol} ${year}: missing balance report`);
+            console.log(`${symbol} ${year}: No matching balance report`);
             continue;
           }
 
-          const revenue = safeNum(income.annualReports[i].totalRevenue);
-          const netIncome = safeNum(income.annualReports[i].netIncome);
+          const revenue = safeNum(incomeReport.totalRevenue);
+          const netIncome = safeNum(incomeReport.netIncome);
           const totalAssets = safeNum(balanceReport.totalAssets);
           const totalLiabilities = safeNum(balanceReport.totalLiabilities);
 
           console.log(
-            `${symbol} ${year} -> revenue: ${revenue}, netIncome: ${netIncome}, assets: ${totalAssets}, liabilities: ${totalLiabilities}`
+            `Inserting: ${symbol} ${year} revenue=${revenue} netIncome=${netIncome} totalAssets=${totalAssets} totalLiabilities=${totalLiabilities}`
           );
 
-          await query(
-            `INSERT INTO financial_statements
-             (company_id, fiscal_year, revenue, net_income, total_assets, total_liabilities)
-             VALUES ($1,$2,$3,$4,$5,$6)
-             ON CONFLICT (company_id, fiscal_year) DO UPDATE SET
-                revenue = EXCLUDED.revenue,
-                net_income = EXCLUDED.net_income,
-                total_assets = EXCLUDED.total_assets,
-                total_liabilities = EXCLUDED.total_liabilities`,
-            [companyId, year, revenue, netIncome, totalAssets, totalLiabilities]
-          );
+          try {
+            await query(
+              `INSERT INTO financial_statements
+               (company_id, fiscal_year, revenue, net_income, total_assets, total_liabilities)
+               VALUES ($1,$2,$3,$4,$5,$6)
+               ON CONFLICT (company_id, fiscal_year) DO UPDATE SET
+                 revenue = EXCLUDED.revenue,
+                 net_income = EXCLUDED.net_income,
+                 total_assets = EXCLUDED.total_assets,
+                 total_liabilities = EXCLUDED.total_liabilities`,
+              [companyId, year, revenue, netIncome, totalAssets, totalLiabilities]
+            );
+          } catch (err) {
+            console.error(`${symbol} ${year}: DB insert failed`, err.message);
+          }
         }
 
         console.log(`${symbol}: Data loaded successfully`);
@@ -103,14 +96,13 @@ app.get("/load", async (req, res) => {
         console.error(`Error loading ${symbol}:`, err.message);
       }
 
-      // Wait 15 seconds to avoid hitting free tier API limit
+      // Delay to avoid free-tier API limits
       await new Promise((r) => setTimeout(r, 15000));
     }
 
-    // Save ETL timestamp AFTER all companies are processed
+    // Save ETL run timestamp
     await pool.query("INSERT INTO etl_runs (run_timestamp) VALUES (NOW())");
-
-    res.send("Data loaded successfully");
+    res.send("Data loaded");
   } catch (err) {
     console.error("ETL Failed:", err);
     res.status(500).send("ETL failed");
@@ -119,7 +111,6 @@ app.get("/load", async (req, res) => {
 
 // ---------------------------
 // /etl-last-run endpoint
-// Returns last ETL timestamp
 // ---------------------------
 app.get("/etl-last-run", async (req, res) => {
   try {
@@ -129,8 +120,7 @@ app.get("/etl-last-run", async (req, res) => {
       ORDER BY run_timestamp DESC
       LIMIT 1
     `);
-    if (result.rows.length === 0) return res.json({ lastRun: null });
-    res.json({ lastRun: result.rows[0].run_timestamp });
+    res.json({ lastRun: result.rows[0]?.run_timestamp || null });
   } catch (err) {
     console.error("Error fetching last ETL run:", err);
     res.status(500).json({ error: "Failed to fetch last ETL run" });
@@ -139,7 +129,6 @@ app.get("/etl-last-run", async (req, res) => {
 
 // ---------------------------
 // /metrics endpoint
-// Returns JSON of calculated metrics
 // ---------------------------
 app.get("/metrics", async (req, res) => {
   try {
@@ -152,9 +141,8 @@ app.get("/metrics", async (req, res) => {
 
     const rows = result.rows;
 
-    // Calculate metrics
-    const metrics = rows.map((row, i, arr) => {
-      const prev = arr.find(
+    const metrics = rows.map((row) => {
+      const prev = rows.find(
         (r) => r.symbol === row.symbol && r.fiscal_year === row.fiscal_year - 1
       );
 
@@ -180,7 +168,6 @@ app.get("/metrics", async (req, res) => {
 
 // ---------------------------
 // /dashboard endpoint
-// Serves HTML dashboard
 // ---------------------------
 app.get("/dashboard", (req, res) => {
   res.sendFile(path.join(__dirname, "../public/dashboard.html"));
@@ -191,4 +178,3 @@ app.get("/dashboard", (req, res) => {
 // ---------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
