@@ -6,10 +6,21 @@ import { fileURLToPath } from "url";
 import { query, pool } from "./db/connection.js";   // <-- FIXED (pool added)
 import { fetchStatement } from "./services/alphaVantage.js";
 
-const app = express();
-app.use(express.json());
+// const app = express();
+// app.use(express.json());
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const app = express();
+const __dirname = path.resolve();
+
+// Serve static files from "public"
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Map root URL "/" to dashboard.html
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+});
 
 // ---------------------------
 // /load endpoint
@@ -167,4 +178,5 @@ app.get("/dashboard", (req, res) => {
 //this is when hosted
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
 
