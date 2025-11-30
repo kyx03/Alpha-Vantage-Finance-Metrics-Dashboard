@@ -1,118 +1,169 @@
-import express from 'express';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import pg from 'pg';
-import fetch from 'node-fetch';
+// src/index.js
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
+import { query, pool } from "./db/connection.js";   // <-- FIXED (pool added)
+import { fetchStatement } from "./services/alphaVantage.js";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// --- PostgreSQL setup ---
-const { Pool } = pg;
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL.includes('render.com') ? { rejectUnauthorized: false } : false
-});
-
-// --- Serve static files ---
-app.use(express.static(path.join(__dirname, '../public')));
 app.use(express.json());
 
-// --- Metrics endpoint ---
-app.get('/metrics', async (req, res) => {
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ---------------------------
+// /load endpoint
+// Fetch financial statements from Alpha Vantage and insert into PostgreSQL
+// ---------------------------
+app.get("/load", async (req, res) => {
+  const symbols = ["TEL", "ST", "DD"]; // companies to load
+  const currentYear = new Date().getFullYear();
+  const yearLimit = currentYear - 3; // last 3 years
+
   try {
-    const result = await pool.query(`
-      SELECT c.symbol, fs.fiscal_year,
-             fs.revenue, fs.net_income, fs.total_assets, fs.total_liabilities,
-             CASE WHEN fs.revenue IS NOT NULL AND fs.revenue != 0 THEN (fs.net_income / fs.revenue) * 100 END AS net_margin,
-             CASE WHEN fs.total_liabilities IS NOT NULL AND fs.total_liabilities != 0 THEN (fs.total_assets / fs.total_liabilities) END AS current_ratio,
-             LAG(fs.revenue) OVER (PARTITION BY c.id ORDER BY fs.fiscal_year) AS prev_revenue,
-             LAG(fs.net_income) OVER (PARTITION BY c.id ORDER BY fs.fiscal_year) AS prev_net_income
-      FROM financial_statements fs
-      JOIN companies c ON c.id = fs.company_id
-      ORDER BY c.symbol, fs.fiscal_year
-    `);
-
-   const rows = result.rows.map(r => ({
-  symbol: r.symbol,
-  fiscal_year: r.fiscal_year,
-  revenue: r.revenue ? Number(r.revenue) : null,
-  net_income: r.net_income ? Number(r.net_income) : null,
-  total_assets: r.total_assets ? Number(r.total_assets) : null,
-  total_liabilities: r.total_liabilities ? Number(r.total_liabilities) : null,
-  net_margin: typeof r.net_margin === 'number' ? Number(r.net_margin.toFixed(2)) : null,
-  current_ratio: typeof r.current_ratio === 'number' ? Number(r.current_ratio.toFixed(2)) : null,
-  revenue_yoy: (r.prev_revenue && r.revenue) ? ((r.revenue - r.prev_revenue) / r.prev_revenue) * 100 : null,
-  net_income_yoy: (r.prev_net_income && r.net_income) ? ((r.net_income - r.prev_net_income) / r.prev_net_income) * 100 : null
-}));
-
-    res.json(rows);
-  } catch (err) {
-    console.error('Error fetching metrics:', err);
-    res.status(500).json({ error: 'Failed to fetch metrics' });
-  }
-});
-
-// --- ETL endpoint ---
-app.get('/load', async (req, res) => {
-  try {
-    const alphaKey = process.env.ALPHA_VANTAGE_API_KEY;
-    if (!alphaKey) throw new Error('Missing ALPHA_VANTAGE_API_KEY');
-
-    // Example: load for all companies in DB
-    const { rows: companies } = await pool.query('SELECT id, symbol FROM companies');
-
-    for (const c of companies) {
+    for (let symbol of symbols) {
       try {
-        // Fetch dummy data (replace with real API calls)
-        const response = await fetch(`https://www.alphavantage.co/query?function=INCOME_STATEMENT&symbol=${c.symbol}&apikey=${alphaKey}`);
-        const data = await response.json();
+        // Fetch statements
+        const income = await fetchStatement(symbol, "income");
+        const balance = await fetchStatement(symbol, "balance");
+        const cashflow = await fetchStatement(symbol, "cashflow");
 
-        // Pick latest fiscal year
-        const fiscal = data.annualReports?.[0];
-        if (!fiscal) continue;
+        // Validate API responses
+        if (!income?.annualReports || !balance?.annualReports) {
+          console.log(`${symbol}: No data returned from API`);
+          continue;
+        }
 
-        await pool.query(`
-          INSERT INTO financial_statements (company_id, fiscal_year, revenue, net_income, total_assets, total_liabilities)
-          VALUES ($1,$2,$3,$4,$5,$6)
-          ON CONFLICT (company_id, fiscal_year) DO UPDATE
-            SET revenue = EXCLUDED.revenue,
+        // Insert company or get existing
+        const companyRes = await query(
+          `INSERT INTO companies (symbol, name) 
+           VALUES ($1, $2) 
+           ON CONFLICT (symbol) DO UPDATE SET name = EXCLUDED.name 
+           RETURNING id`,
+          [symbol, symbol]
+        );
+        const companyId = companyRes.rows[0].id;
+
+        // Insert financial statements (last 3 years)
+        for (let i = 0; i < income.annualReports.length; i++) {
+          const year = parseInt(income.annualReports[i].fiscalDateEnding.slice(0, 4));
+          if (year < yearLimit) continue;
+
+          const revenue = parseInt(income.annualReports[i].totalRevenue) || 0;
+          const netIncome = parseInt(income.annualReports[i].netIncome) || 0;
+          const totalAssets = parseInt(balance.annualReports[i].totalAssets) || 0;
+          const totalLiabilities = parseInt(balance.annualReports[i].totalLiabilities) || 0;
+
+          await query(
+            `INSERT INTO financial_statements
+             (company_id, fiscal_year, revenue, net_income, total_assets, total_liabilities)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (company_id, fiscal_year) DO UPDATE SET
+                revenue = EXCLUDED.revenue,
                 net_income = EXCLUDED.net_income,
                 total_assets = EXCLUDED.total_assets,
-                total_liabilities = EXCLUDED.total_liabilities
-        `, [
-          c.id,
-          Number(fiscal.fiscalDateEnding.split('-')[0]),
-          Number(fiscal.totalRevenue),
-          Number(fiscal.netIncome),
-          Number(fiscal.totalAssets),
-          Number(fiscal.totalLiabilities)
-        ]);
-      } catch (e) {
-        console.error(`Failed to load ${c.symbol}:`, e);
+                total_liabilities = EXCLUDED.total_liabilities`,
+            [companyId, year, revenue, netIncome, totalAssets, totalLiabilities]
+          );
+        }
+
+        console.log(`${symbol}: Data loaded successfully`);
+      } catch (err) {
+        console.error(`Error loading ${symbol}:`, err.message);
       }
+
+      // Wait 15 seconds to avoid hitting free tier API limit
+      await new Promise((r) => setTimeout(r, 15000));
     }
 
-    // Record ETL run
-    await pool.query('INSERT INTO etl_runs (run_timestamp) VALUES (NOW())');
+    // ---------------------------
+    // Save ETL timestamp AFTER all companies are processed
+    // ---------------------------
+    await pool.query("INSERT INTO etl_runs (run_timestamp) VALUES (NOW())");
 
-    res.json({ status: 'success', loaded_companies: companies.length });
+    res.send("Data loaded");
   } catch (err) {
-    console.error('ETL Failed:', err);
-    res.status(500).json({ error: 'ETL failed', message: err.message });
+    console.error("ETL Failed:", err);
+    res.status(500).send("ETL failed");
   }
 });
 
-// --- Fallback to dashboard ---
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/dashboard.html'));
+// ---------------------------
+// /etl/last endpoint
+// Returns last ETL timestamp
+// ---------------------------
+app.get("/etl-last-run", async (req, res) => {
+  try {
+    const result = await query(`
+      SELECT run_timestamp
+      FROM etl_runs
+      ORDER BY run_timestamp DESC
+      LIMIT 1
+    `);
+    if (result.rows.length === 0) {
+      return res.json({ lastRun: null });
+    }
+    res.json({ lastRun: result.rows[0].run_timestamp });
+  } catch (err) {
+    console.error("Error fetching last ETL run:", err);
+    res.status(500).json({ error: "Failed to fetch last ETL run" });
+  }
 });
 
-// --- Start server ---
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// ---------------------------
+// /metrics endpoint
+// Returns JSON of calculated metrics
+// ---------------------------
+app.get("/metrics", async (req, res) => {
+  try {
+    const result = await query(`
+      SELECT c.symbol, c.name, f.fiscal_year, f.revenue, f.net_income, f.total_assets, f.total_liabilities
+      FROM financial_statements f
+      JOIN companies c ON f.company_id = c.id
+      ORDER BY c.symbol, f.fiscal_year
+    `);
+
+    const rows = result.rows;
+
+    // Calculate metrics
+    const metrics = rows.map((row, i, arr) => {
+      const prev = arr.find(
+        (r) => r.symbol === row.symbol && r.fiscal_year === row.fiscal_year - 1
+      );
+
+      return {
+        symbol: row.symbol,
+        name: row.name,
+        fiscal_year: row.fiscal_year,
+        net_margin: row.revenue ? (row.net_income / row.revenue) * 100 : null,
+        current_ratio: row.total_liabilities ? row.total_assets / row.total_liabilities : null,
+        revenue_yoy:
+          prev && prev.revenue ? ((row.revenue - prev.revenue) / prev.revenue) * 100 : null,
+        net_income_yoy:
+          prev && prev.net_income ? ((row.net_income - prev.net_income) / prev.net_income) * 100 : null,
+      };
+    });
+
+    res.json(metrics);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Error fetching metrics");
+  }
 });
 
+// ---------------------------
+// /dashboard endpoint
+// Serves HTML dashboard
+// ---------------------------
+app.get("/dashboard", (req, res) => {
+  res.sendFile(path.join(__dirname, "../public/dashboard.html"));
+});
+
+// ---------------------------
+// Start server
+// ---------------------------
+//this is for running in local
+app.listen(3000, () => console.log("Server running on 3000"));
+//this is when hosted
+// const PORT = process.env.PORT || 3000;
+// app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
