@@ -60,9 +60,6 @@ app.get("/load", async (req, res) => {
         );
         const companyId = companyRes.rows[0].id;
 
-        // ---------------------------
-        // FIX: match years properly
-        // ---------------------------
         const incomeByYear = {};
         income.annualReports.forEach(r => {
           incomeByYear[parseInt(r.fiscalDateEnding.slice(0, 4))] = r;
@@ -73,7 +70,6 @@ app.get("/load", async (req, res) => {
           balanceByYear[parseInt(r.fiscalDateEnding.slice(0, 4))] = r;
         });
 
-        // process only years appearing in income (primary source)
         for (const yearStr of Object.keys(incomeByYear)) {
           const year = parseInt(yearStr);
           if (year < yearLimit) continue;
@@ -86,7 +82,10 @@ app.get("/load", async (req, res) => {
             continue;
           }
 
-          const revenue = parseInt(inc.totalRevenue) || 0;
+          // ---------------------------
+          // FIX: Alpha Vantage has no totalRevenue; use grossProfit
+          // ---------------------------
+          const revenue = parseInt(inc.grossProfit) || 0;
           const netIncome = parseInt(inc.netIncome) || 0;
           const totalAssets = parseInt(bal.totalAssets) || 0;
           const totalLiabilities = parseInt(bal.totalLiabilities) || 0;
