@@ -3,10 +3,7 @@ import fetch from "node-fetch";
 import { API_KEY } from "../config.js";
 
 /**
- * Fetch financial statement from Alpha Vantage
- * @param {string} symbol - Company symbol
- * @param {string} type - "income", "balance", or "cashflow"
- * @returns {object} - { annualReports: [...] } or empty array if no data
+ * Fetch financial data from Alpha Vantage
  */
 export async function fetchStatement(symbol, type) {
   let functionName;
@@ -31,9 +28,11 @@ export async function fetchStatement(symbol, type) {
     const response = await fetch(url);
     const data = await response.json();
 
-    // Handle rate limit or invalid API responses
+    // NEW DEBUG LOG (CRITICAL)
+    console.log(`API RESP (${symbol}, ${type}):`, JSON.stringify(data).slice(0,300));
+
     if (data.Note) {
-      console.warn(`Alpha Vantage rate limit reached for ${symbol}: ${data.Note}`);
+      console.warn(`Alpha Vantage rate limit reached for ${symbol}`);
       return { annualReports: [] };
     }
 
@@ -43,7 +42,7 @@ export async function fetchStatement(symbol, type) {
     }
 
     if (!data.annualReports || data.annualReports.length === 0) {
-      console.warn(`No valid data returned from API for ${symbol}`);
+      console.warn(`No annualReports for ${symbol} (${type})`);
       return { annualReports: [] };
     }
 
