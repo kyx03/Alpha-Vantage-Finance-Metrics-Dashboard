@@ -1,50 +1,64 @@
 // src/index.js
-
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { query, pool } from "./db/connection.js";   // <-- FIXED (pool added)
+import pkg from "pg";
 import { fetchStatement } from "./services/alphaVantage.js";
 
+const { Pool } = pkg;
 const app = express();
 app.use(express.json());
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------
+// DATABASE POOL
+// ---------------------------
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false } // required for Render Postgres
+});
+
+// helper query function
+async function query(text, params) {
+  const client = await pool.connect();
+  try {
+    const res = await client.query(text, params);
+    return res;
+  } finally {
+    client.release();
+  }
+}
+
+// ---------------------------
 // /load endpoint
-// Fetch financial statements from Alpha Vantage and insert into PostgreSQL
 // ---------------------------
 app.get("/load", async (req, res) => {
-  const symbols = ["TEL", "ST", "DD"]; // companies to load
+  const symbols = ["TEL", "ST", "DD"];
   const currentYear = new Date().getFullYear();
-  const yearLimit = currentYear - 3; // last 3 years
+  const yearLimit = currentYear - 3;
 
   try {
     for (let symbol of symbols) {
       try {
-        // Fetch statements
         const income = await fetchStatement(symbol, "income");
         const balance = await fetchStatement(symbol, "balance");
         const cashflow = await fetchStatement(symbol, "cashflow");
 
-        // Validate API responses
         if (!income?.annualReports || !balance?.annualReports) {
-          console.log(`${symbol}: No data returned from API`);
+          console.log(`${symbol}: No data from API`);
           continue;
         }
 
-        // Insert company or get existing
         const companyRes = await query(
           `INSERT INTO companies (symbol, name) 
-           VALUES ($1, $2) 
-           ON CONFLICT (symbol) DO UPDATE SET name = EXCLUDED.name 
+           VALUES ($1, $2)
+           ON CONFLICT (symbol) DO UPDATE SET name = EXCLUDED.name
            RETURNING id`,
           [symbol, symbol]
         );
         const companyId = companyRes.rows[0].id;
 
-        // Insert financial statements (last 3 years)
         for (let i = 0; i < income.annualReports.length; i++) {
           const year = parseInt(income.annualReports[i].fiscalDateEnding.slice(0, 4));
           if (year < yearLimit) continue;
@@ -72,15 +86,10 @@ app.get("/load", async (req, res) => {
         console.error(`Error loading ${symbol}:`, err.message);
       }
 
-      // Wait 15 seconds to avoid hitting free tier API limit
-      await new Promise((r) => setTimeout(r, 15000));
+      await new Promise((r) => setTimeout(r, 15000)); // API rate limit
     }
 
-    // ---------------------------
-    // Save ETL timestamp AFTER all companies are processed
-    // ---------------------------
     await pool.query("INSERT INTO etl_runs (run_timestamp) VALUES (NOW())");
-
     res.send("Data loaded");
   } catch (err) {
     console.error("ETL Failed:", err);
@@ -89,8 +98,7 @@ app.get("/load", async (req, res) => {
 });
 
 // ---------------------------
-// /etl/last endpoint
-// Returns last ETL timestamp
+// /etl-last-run endpoint
 // ---------------------------
 app.get("/etl-last-run", async (req, res) => {
   try {
@@ -100,10 +108,7 @@ app.get("/etl-last-run", async (req, res) => {
       ORDER BY run_timestamp DESC
       LIMIT 1
     `);
-    if (result.rows.length === 0) {
-      return res.json({ lastRun: null });
-    }
-    res.json({ lastRun: result.rows[0].run_timestamp });
+    res.json({ lastRun: result.rows[0]?.run_timestamp || null });
   } catch (err) {
     console.error("Error fetching last ETL run:", err);
     res.status(500).json({ error: "Failed to fetch last ETL run" });
@@ -112,7 +117,6 @@ app.get("/etl-last-run", async (req, res) => {
 
 // ---------------------------
 // /metrics endpoint
-// Returns JSON of calculated metrics
 // ---------------------------
 app.get("/metrics", async (req, res) => {
   try {
@@ -125,7 +129,6 @@ app.get("/metrics", async (req, res) => {
 
     const rows = result.rows;
 
-    // Calculate metrics
     const metrics = rows.map((row, i, arr) => {
       const prev = arr.find(
         (r) => r.symbol === row.symbol && r.fiscal_year === row.fiscal_year - 1
@@ -153,7 +156,6 @@ app.get("/metrics", async (req, res) => {
 
 // ---------------------------
 // /dashboard endpoint
-// Serves HTML dashboard
 // ---------------------------
 app.get("/dashboard", (req, res) => {
   res.sendFile(path.join(__dirname, "../public/dashboard.html"));
@@ -162,8 +164,5 @@ app.get("/dashboard", (req, res) => {
 // ---------------------------
 // Start server
 // ---------------------------
-//this is for running in local
-app.listen(3000, () => console.log("Server running on 3000"));
-//this is when hosted
-// const PORT = process.env.PORT || 3000;
-// app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
