@@ -9,22 +9,27 @@ const { Pool } = pkg;
 const app = express();
 app.use(express.json());
 
+// ---------------------------
+// DIRECTORY FIX FOR RENDER
+// ---------------------------
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const rootDir = path.join(__dirname, "..");
+
+// Serve static files (CSS, JS, HTML)
+app.use(express.static(path.join(rootDir, "public")));
 
 // ---------------------------
 // DATABASE POOL
 // ---------------------------
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false } // required for Render Postgres
+  ssl: { rejectUnauthorized: false }
 });
 
-// helper query function
 async function query(text, params) {
   const client = await pool.connect();
   try {
-    const res = await client.query(text, params);
-    return res;
+    return await client.query(text, params);
   } finally {
     client.release();
   }
@@ -86,7 +91,7 @@ app.get("/load", async (req, res) => {
         console.error(`Error loading ${symbol}:`, err.message);
       }
 
-      await new Promise((r) => setTimeout(r, 15000)); // API rate limit
+      await new Promise((r) => setTimeout(r, 15000));
     }
 
     await pool.query("INSERT INTO etl_runs (run_timestamp) VALUES (NOW())");
@@ -98,7 +103,7 @@ app.get("/load", async (req, res) => {
 });
 
 // ---------------------------
-// /etl-last-run endpoint
+// /etl-last-run
 // ---------------------------
 app.get("/etl-last-run", async (req, res) => {
   try {
@@ -110,13 +115,13 @@ app.get("/etl-last-run", async (req, res) => {
     `);
     res.json({ lastRun: result.rows[0]?.run_timestamp || null });
   } catch (err) {
-    console.error("Error fetching last ETL run:", err);
-    res.status(500).json({ error: "Failed to fetch last ETL run" });
+    console.error("Error fetching ETL run:", err);
+    res.status(500).json({ error: "Failed to fetch" });
   }
 });
 
 // ---------------------------
-// /metrics endpoint
+// /metrics
 // ---------------------------
 app.get("/metrics", async (req, res) => {
   try {
@@ -129,7 +134,7 @@ app.get("/metrics", async (req, res) => {
 
     const rows = result.rows;
 
-    const metrics = rows.map((row, i, arr) => {
+    const metrics = rows.map((row, _, arr) => {
       const prev = arr.find(
         (r) => r.symbol === row.symbol && r.fiscal_year === row.fiscal_year - 1
       );
@@ -155,9 +160,14 @@ app.get("/metrics", async (req, res) => {
 });
 
 // ---------------------------
-// /dashboard endpoint
+// Dashboard route
 // ---------------------------
 app.get("/dashboard", (req, res) => {
+  res.sendFile(path.join(rootDir, "public", "dashboard.html"));
+});
+
+// Root route (optional)
+app.get("/", (req, res) => {
   res.sendFile(path.join(rootDir, "public", "dashboard.html"));
 });
 
@@ -165,6 +175,4 @@ app.get("/dashboard", (req, res) => {
 // Start server
 // ---------------------------
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
-
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
