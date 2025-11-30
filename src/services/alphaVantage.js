@@ -1,60 +1,55 @@
 // src/services/alphaVantage.js
-
 import fetch from "node-fetch";
+import { API_KEY } from "../config.js";
 
-const API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
-const BASE_URL = "https://www.alphavantage.co/query";
-
-// Helper: safely parse numbers
-const safeNum = (val) => {
-  if (val === undefined || val === null || val === "") return 0;
-  const n = Number(val);
-  return isNaN(n) ? 0 : n;
-};
-
+/**
+ * Fetch financial statement from Alpha Vantage
+ * @param {string} symbol - Company symbol
+ * @param {string} type - "income", "balance", or "cashflow"
+ * @returns {object} - { annualReports: [...] } or empty array if no data
+ */
 export async function fetchStatement(symbol, type) {
-  try {
-    let func;
-    switch (type) {
-      case "income":
-        func = "INCOME_STATEMENT";
-        break;
-      case "balance":
-        func = "BALANCE_SHEET";
-        break;
-      case "cashflow":
-        func = "CASH_FLOW";
-        break;
-      default:
-        throw new Error("Unknown statement type");
-    }
+  let functionName;
 
-    const url = `${BASE_URL}?function=${func}&symbol=${symbol}&apikey=${API_KEY}`;
+  switch (type.toLowerCase()) {
+    case "income":
+      functionName = "INCOME_STATEMENT";
+      break;
+    case "balance":
+      functionName = "BALANCE_SHEET";
+      break;
+    case "cashflow":
+      functionName = "CASH_FLOW";
+      break;
+    default:
+      throw new Error(`Unknown statement type: ${type}`);
+  }
+
+  const url = `https://www.alphavantage.co/query?function=${functionName}&symbol=${symbol}&apikey=${API_KEY}`;
+
+  try {
     const response = await fetch(url);
     const data = await response.json();
 
-    // If API returns note (rate limit), pass it through
-    if (data.Note) return data;
+    // Handle rate limit or invalid API responses
+    if (data.Note) {
+      console.warn(`Alpha Vantage rate limit reached for ${symbol}: ${data.Note}`);
+      return { annualReports: [] };
+    }
 
-    // Normalize all annualReports numbers
-    if (data.annualReports) {
-      data.annualReports = data.annualReports.map((report) => {
-        const normalized = {};
-        for (const key in report) {
-          // Parse all numeric fields
-          if (!isNaN(Number(report[key]))) {
-            normalized[key] = safeNum(report[key]);
-          } else {
-            normalized[key] = report[key];
-          }
-        }
-        return normalized;
-      });
+    if (data.Information) {
+      console.warn(`Alpha Vantage info for ${symbol}: ${data.Information}`);
+      return { annualReports: [] };
+    }
+
+    if (!data.annualReports || data.annualReports.length === 0) {
+      console.warn(`No valid data returned from API for ${symbol}`);
+      return { annualReports: [] };
     }
 
     return data;
   } catch (err) {
-    console.error(`fetchStatement ${symbol} ${type} failed:`, err.message);
-    return null;
+    console.error(`Error fetching ${type} for ${symbol}:`, err.message);
+    return { annualReports: [] };
   }
 }
