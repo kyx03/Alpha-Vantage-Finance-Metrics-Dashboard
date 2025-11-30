@@ -36,18 +36,18 @@ app.get('/metrics', async (req, res) => {
       ORDER BY c.symbol, fs.fiscal_year
     `);
 
-    const rows = result.rows.map(r => ({
-      symbol: r.symbol,
-      fiscal_year: r.fiscal_year,
-      revenue: r.revenue ? Number(r.revenue) : null,
-      net_income: r.net_income ? Number(r.net_income) : null,
-      total_assets: r.total_assets ? Number(r.total_assets) : null,
-      total_liabilities: r.total_liabilities ? Number(r.total_liabilities) : null,
-      net_margin: r.net_margin ? Number(r.net_margin.toFixed(2)) : null,
-      current_ratio: r.current_ratio ? Number(r.current_ratio.toFixed(2)) : null,
-      revenue_yoy: r.prev_revenue ? ((r.revenue - r.prev_revenue) / r.prev_revenue) * 100 : null,
-      net_income_yoy: r.prev_net_income ? ((r.net_income - r.prev_net_income) / r.prev_net_income) * 100 : null
-    }));
+   const rows = result.rows.map(r => ({
+  symbol: r.symbol,
+  fiscal_year: r.fiscal_year,
+  revenue: r.revenue ? Number(r.revenue) : null,
+  net_income: r.net_income ? Number(r.net_income) : null,
+  total_assets: r.total_assets ? Number(r.total_assets) : null,
+  total_liabilities: r.total_liabilities ? Number(r.total_liabilities) : null,
+  net_margin: typeof r.net_margin === 'number' ? Number(r.net_margin.toFixed(2)) : null,
+  current_ratio: typeof r.current_ratio === 'number' ? Number(r.current_ratio.toFixed(2)) : null,
+  revenue_yoy: (r.prev_revenue && r.revenue) ? ((r.revenue - r.prev_revenue) / r.prev_revenue) * 100 : null,
+  net_income_yoy: (r.prev_net_income && r.net_income) ? ((r.net_income - r.prev_net_income) / r.prev_net_income) * 100 : null
+}));
 
     res.json(rows);
   } catch (err) {
@@ -115,3 +115,4 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
