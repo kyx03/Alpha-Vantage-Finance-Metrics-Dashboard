@@ -9,18 +9,13 @@ const { Pool } = pkg;
 const app = express();
 app.use(express.json());
 
-// ---------------------------
-// DIRECTORY FIX FOR RENDER
-// ---------------------------
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.join(__dirname, "..");
 
-// Serve static files (CSS, JS, HTML)
+// static
 app.use(express.static(path.join(rootDir, "public")));
 
-// ---------------------------
-// DATABASE POOL
-// ---------------------------
+// DB pool
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -36,7 +31,7 @@ async function query(text, params) {
 }
 
 // ---------------------------
-// /load endpoint
+// /load endpoint (FIXED)
 // ---------------------------
 app.get("/load", async (req, res) => {
   const symbols = ["TEL", "ST", "DD"];
@@ -51,60 +46,81 @@ app.get("/load", async (req, res) => {
         const cashflow = await fetchStatement(symbol, "cashflow");
 
         if (!income?.annualReports || !balance?.annualReports) {
-          console.log(`${symbol}: No data from API`);
+          console.log(`${symbol}: No API data`);
           continue;
         }
 
+        // insert/update company
         const companyRes = await query(
-          `INSERT INTO companies (symbol, name) 
-           VALUES ($1, $2)
+          `INSERT INTO companies (symbol, name)
+           VALUES ($1,$2)
            ON CONFLICT (symbol) DO UPDATE SET name = EXCLUDED.name
            RETURNING id`,
           [symbol, symbol]
         );
         const companyId = companyRes.rows[0].id;
 
-        for (let i = 0; i < income.annualReports.length; i++) {
-          const year = parseInt(income.annualReports[i].fiscalDateEnding.slice(0, 4));
+        // ---------------------------
+        // FIX: match years properly
+        // ---------------------------
+        const incomeByYear = {};
+        income.annualReports.forEach(r => {
+          incomeByYear[parseInt(r.fiscalDateEnding.slice(0, 4))] = r;
+        });
+
+        const balanceByYear = {};
+        balance.annualReports.forEach(r => {
+          balanceByYear[parseInt(r.fiscalDateEnding.slice(0, 4))] = r;
+        });
+
+        // process only years appearing in income (primary source)
+        for (const yearStr of Object.keys(incomeByYear)) {
+          const year = parseInt(yearStr);
           if (year < yearLimit) continue;
 
-          const revenue = parseInt(income.annualReports[i].totalRevenue) || 0;
-          const netIncome = parseInt(income.annualReports[i].netIncome) || 0;
-          const totalAssets = parseInt(balance.annualReports[i].totalAssets) || 0;
-          const totalLiabilities = parseInt(balance.annualReports[i].totalLiabilities) || 0;
+          const inc = incomeByYear[year];
+          const bal = balanceByYear[year];
+
+          if (!bal) {
+            console.log(`${symbol}: missing balance sheet for ${year}, skipping`);
+            continue;
+          }
+
+          const revenue = parseInt(inc.totalRevenue) || 0;
+          const netIncome = parseInt(inc.netIncome) || 0;
+          const totalAssets = parseInt(bal.totalAssets) || 0;
+          const totalLiabilities = parseInt(bal.totalLiabilities) || 0;
 
           await query(
             `INSERT INTO financial_statements
              (company_id, fiscal_year, revenue, net_income, total_assets, total_liabilities)
              VALUES ($1,$2,$3,$4,$5,$6)
              ON CONFLICT (company_id, fiscal_year) DO UPDATE SET
-                revenue = EXCLUDED.revenue,
-                net_income = EXCLUDED.net_income,
-                total_assets = EXCLUDED.total_assets,
-                total_liabilities = EXCLUDED.total_liabilities`,
+               revenue = EXCLUDED.revenue,
+               net_income = EXCLUDED.net_income,
+               total_assets = EXCLUDED.total_assets,
+               total_liabilities = EXCLUDED.total_liabilities`,
             [companyId, year, revenue, netIncome, totalAssets, totalLiabilities]
           );
         }
 
-        console.log(`${symbol}: Data loaded successfully`);
+        console.log(`${symbol}: Loaded successfully`);
       } catch (err) {
-        console.error(`Error loading ${symbol}:`, err.message);
+        console.error(`Load error for ${symbol}:`, err.message);
       }
 
-      await new Promise((r) => setTimeout(r, 15000));
+      await new Promise(r => setTimeout(r, 15000)); // keep
     }
 
     await pool.query("INSERT INTO etl_runs (run_timestamp) VALUES (NOW())");
     res.send("Data loaded");
   } catch (err) {
-    console.error("ETL Failed:", err);
+    console.error("ETL failed:", err);
     res.status(500).send("ETL failed");
   }
 });
 
-// ---------------------------
-// /etl-last-run
-// ---------------------------
+// Other routes unchanged…
 app.get("/etl-last-run", async (req, res) => {
   try {
     const result = await query(`
@@ -115,14 +131,11 @@ app.get("/etl-last-run", async (req, res) => {
     `);
     res.json({ lastRun: result.rows[0]?.run_timestamp || null });
   } catch (err) {
-    console.error("Error fetching ETL run:", err);
+    console.error(err);
     res.status(500).json({ error: "Failed to fetch" });
   }
 });
 
-// ---------------------------
-// /metrics
-// ---------------------------
 app.get("/metrics", async (req, res) => {
   try {
     const result = await query(`
@@ -136,7 +149,7 @@ app.get("/metrics", async (req, res) => {
 
     const metrics = rows.map((row, _, arr) => {
       const prev = arr.find(
-        (r) => r.symbol === row.symbol && r.fiscal_year === row.fiscal_year - 1
+        r => r.symbol === row.symbol && r.fiscal_year === row.fiscal_year - 1
       );
 
       return {
@@ -148,7 +161,7 @@ app.get("/metrics", async (req, res) => {
         revenue_yoy:
           prev && prev.revenue ? ((row.revenue - prev.revenue) / prev.revenue) * 100 : null,
         net_income_yoy:
-          prev && prev.net_income ? ((row.net_income - prev.net_income) / prev.net_income) * 100 : null,
+          prev && prev.net_income ? ((row.net_income - prev.net_income) / prev.net_income) * 100 : null
       };
     });
 
@@ -159,20 +172,13 @@ app.get("/metrics", async (req, res) => {
   }
 });
 
-// ---------------------------
-// Dashboard route
-// ---------------------------
 app.get("/dashboard", (req, res) => {
   res.sendFile(path.join(rootDir, "public", "dashboard.html"));
 });
 
-// Root route (optional)
 app.get("/", (req, res) => {
   res.sendFile(path.join(rootDir, "public", "dashboard.html"));
 });
 
-// ---------------------------
-// Start server
-// ---------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on ${PORT}`));
