@@ -20,6 +20,7 @@ function safeNumber(value) {
 }
 
 // ---------------------------
+// ---------------------------
 // /load endpoint
 // Fetch financial statements from Alpha Vantage and insert into PostgreSQL
 // ---------------------------
@@ -27,6 +28,15 @@ app.get("/load", async (req, res) => {
   const symbols = ["TEL", "ST", "DD"]; // companies to load
   const currentYear = new Date().getFullYear();
   const yearLimit = currentYear - 3; // last 3 years
+
+  // Helper: safely convert string/number to numeric value
+  const safeNum = (str) => {
+    if (!str) return 0;
+    if (typeof str === "number") return str;
+    // remove commas, then convert
+    const n = Number(str.replace(/,/g, ""));
+    return isNaN(n) ? 0 : n;
+  };
 
   try {
     for (let symbol of symbols) {
@@ -59,17 +69,21 @@ app.get("/load", async (req, res) => {
 
           // Match balance sheet by fiscal year
           const balanceReport = balance.annualReports.find(
-            r => parseInt(r.fiscalDateEnding.slice(0,4)) === year
+            (r) => parseInt(r.fiscalDateEnding.slice(0, 4)) === year
           );
           if (!balanceReport) {
-            console.log(`Skipping ${symbol} ${year} due to missing balance report`);
+            console.log(`Skipping ${symbol} ${year}: missing balance report`);
             continue;
           }
 
-          const revenue = safeNumber(income.annualReports[i].totalRevenue);
-          const netIncome = safeNumber(income.annualReports[i].netIncome);
-          const totalAssets = safeNumber(balanceReport.totalAssets);
-          const totalLiabilities = safeNumber(balanceReport.totalLiabilities);
+          const revenue = safeNum(income.annualReports[i].totalRevenue);
+          const netIncome = safeNum(income.annualReports[i].netIncome);
+          const totalAssets = safeNum(balanceReport.totalAssets);
+          const totalLiabilities = safeNum(balanceReport.totalLiabilities);
+
+          console.log(
+            `${symbol} ${year} -> revenue: ${revenue}, netIncome: ${netIncome}, assets: ${totalAssets}, liabilities: ${totalLiabilities}`
+          );
 
           await query(
             `INSERT INTO financial_statements
@@ -96,7 +110,7 @@ app.get("/load", async (req, res) => {
     // Save ETL timestamp AFTER all companies are processed
     await pool.query("INSERT INTO etl_runs (run_timestamp) VALUES (NOW())");
 
-    res.send("Data loaded");
+    res.send("Data loaded successfully");
   } catch (err) {
     console.error("ETL Failed:", err);
     res.status(500).send("ETL failed");
@@ -177,3 +191,4 @@ app.get("/dashboard", (req, res) => {
 // ---------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
