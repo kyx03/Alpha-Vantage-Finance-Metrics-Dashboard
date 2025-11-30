@@ -157,8 +157,8 @@ app.get("/metrics", async (req, res) => {
 // ---------------------------
 // /dashboard endpoint
 // ---------------------------
-app.get("/", (req, res) => {
-  res.redirect("/dashboard");
+app.get("/dashboard", (req, res) => {
+  res.sendFile(path.join(rootDir, "public", "dashboard.html"));
 });
 
 // ---------------------------
@@ -166,4 +166,5 @@ app.get("/", (req, res) => {
 // ---------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
 
