@@ -12,7 +12,7 @@ app.use(express.json());
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.join(__dirname, "..");
 
-// static
+// serve static files
 app.use(express.static(path.join(rootDir, "public")));
 
 // DB pool
@@ -31,7 +31,18 @@ async function query(text, params) {
 }
 
 // ---------------------------
-// /load endpoint (FIXED)
+// Helper: robust numeric parser
+// ---------------------------
+function safeNum(val) {
+  if (val === undefined || val === null) return 0;
+  // convert to string, remove commas and parentheses, trim
+  const s = String(val).replace(/,/g, "").replace(/\(/g, "-").replace(/\)/g, "").trim();
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// ---------------------------
+// /load endpoint (only minimally updated)
 // ---------------------------
 app.get("/load", async (req, res) => {
   const symbols = ["TEL", "ST", "DD"];
@@ -46,7 +57,7 @@ app.get("/load", async (req, res) => {
         const cashflow = await fetchStatement(symbol, "cashflow");
 
         if (!income?.annualReports || !balance?.annualReports) {
-          console.log(`${symbol}: No API data`);
+          console.log(`${symbol}: No API data (income or balance missing)`);
           continue;
         }
 
@@ -58,21 +69,30 @@ app.get("/load", async (req, res) => {
            RETURNING id`,
           [symbol, symbol]
         );
+
+        if (!companyRes || !companyRes.rows || companyRes.rows.length === 0) {
+          console.error(`${symbol}: failed to create/get company row, skipping symbol`);
+          continue;
+        }
         const companyId = companyRes.rows[0].id;
 
+        // build lookup by year for income & balance
         const incomeByYear = {};
         income.annualReports.forEach(r => {
-          incomeByYear[parseInt(r.fiscalDateEnding.slice(0, 4))] = r;
+          const fy = r?.fiscalDateEnding ? parseInt(r.fiscalDateEnding.slice(0, 4)) : null;
+          if (fy) incomeByYear[fy] = r;
         });
 
         const balanceByYear = {};
         balance.annualReports.forEach(r => {
-          balanceByYear[parseInt(r.fiscalDateEnding.slice(0, 4))] = r;
+          const fy = r?.fiscalDateEnding ? parseInt(r.fiscalDateEnding.slice(0, 4)) : null;
+          if (fy) balanceByYear[fy] = r;
         });
 
+        // iterate over income years (only last 3 will be inside annualReports.slice(0,3) typically)
         for (const yearStr of Object.keys(incomeByYear)) {
           const year = parseInt(yearStr);
-          if (year < yearLimit) continue;
+          if (Number.isNaN(year) || year < yearLimit) continue;
 
           const inc = incomeByYear[year];
           const bal = balanceByYear[year];
@@ -82,44 +102,64 @@ app.get("/load", async (req, res) => {
             continue;
           }
 
-          // ---------------------------
-          // FIX: Alpha Vantage has no totalRevenue; use grossProfit
-          // ---------------------------
-          const revenue = parseInt(inc.grossProfit) || 0;
-          const netIncome = parseInt(inc.netIncome) || 0;
-          const totalAssets = parseInt(bal.totalAssets) || 0;
-          const totalLiabilities = parseInt(bal.totalLiabilities) || 0;
+          // Use safeNum to parse numeric fields (handles commas, parentheses, etc.)
+          // NOTE: Alpha Vantage income reports do not always provide "totalRevenue" — grossProfit is used as a proxy.
+          const revenue = safeNum(inc.grossProfit ?? inc.totalRevenue ?? 0);
+          const netIncome = safeNum(inc.netIncome ?? 0);
+          const totalAssets = safeNum(bal.totalAssets ?? 0);
+          const totalLiabilities = safeNum(bal.totalLiabilities ?? 0);
 
-          await query(
-            `INSERT INTO financial_statements
-             (company_id, fiscal_year, revenue, net_income, total_assets, total_liabilities)
-             VALUES ($1,$2,$3,$4,$5,$6)
-             ON CONFLICT (company_id, fiscal_year) DO UPDATE SET
-               revenue = EXCLUDED.revenue,
-               net_income = EXCLUDED.net_income,
-               total_assets = EXCLUDED.total_assets,
-               total_liabilities = EXCLUDED.total_liabilities`,
-            [companyId, year, revenue, netIncome, totalAssets, totalLiabilities]
+          // Log values we will insert (helps debug why table stays empty)
+          console.log(
+            `${symbol} ${year} -> companyId=${companyId}, revenue=${revenue}, netIncome=${netIncome}, totalAssets=${totalAssets}, totalLiabilities=${totalLiabilities}`
           );
+
+          try {
+            const insertRes = await query(
+              `INSERT INTO financial_statements
+               (company_id, fiscal_year, revenue, net_income, total_assets, total_liabilities)
+               VALUES ($1,$2,$3,$4,$5,$6)
+               ON CONFLICT (company_id, fiscal_year) DO UPDATE SET
+                 revenue = EXCLUDED.revenue,
+                 net_income = EXCLUDED.net_income,
+                 total_assets = EXCLUDED.total_assets,
+                 total_liabilities = EXCLUDED.total_liabilities`,
+              [companyId, year, revenue, netIncome, totalAssets, totalLiabilities]
+            );
+            // insertRes doesn't directly show affected row count for INSERT without RETURNING,
+            // but logging success is still helpful
+            console.log(`${symbol} ${year}: insert/update attempted`);
+          } catch (dbErr) {
+            console.error(`${symbol} ${year}: DB insert failed:`, dbErr.message);
+          }
         }
 
-        console.log(`${symbol}: Loaded successfully`);
+        console.log(`${symbol}: Loaded (ETL loop)`);
       } catch (err) {
-        console.error(`Load error for ${symbol}:`, err.message);
+        console.error(`Load error for ${symbol}:`, err && err.message ? err.message : err);
       }
 
-      await new Promise(r => setTimeout(r, 15000)); // keep
+      // Respect API rate limits
+      await new Promise(r => setTimeout(r, 15000));
     }
 
-    await pool.query("INSERT INTO etl_runs (run_timestamp) VALUES (NOW())");
+    // record ETL run
+    try {
+      await pool.query("INSERT INTO etl_runs (run_timestamp) VALUES (NOW())");
+    } catch (err) {
+      console.error("Failed to record ETL run:", err.message);
+    }
+
     res.send("Data loaded");
   } catch (err) {
-    console.error("ETL failed:", err);
+    console.error("ETL failed:", err && err.message ? err.message : err);
     res.status(500).send("ETL failed");
   }
 });
 
-// Other routes unchanged…
+// ---------------------------
+// other routes unchanged
+// ---------------------------
 app.get("/etl-last-run", async (req, res) => {
   try {
     const result = await query(`
