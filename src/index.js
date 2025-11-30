@@ -162,4 +162,9 @@ app.get("/dashboard", (req, res) => {
 // ---------------------------
 // Start server
 // ---------------------------
-app.listen(3000, () => console.log("Server running on 3000"));
+//this is for running in local
+//app.listen(3000, () => console.log("Server running on 3000"));
+//this is when hosted
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
