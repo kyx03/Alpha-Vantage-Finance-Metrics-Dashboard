@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 // src/index.js
 import express from "express";
 import path from "path";
@@ -292,6 +291,7 @@ initializeDatabase().then(() => {
   console.error("Failed to start server:", err);
   process.exit(1);
 });
+
 =======
 // src/index.js
 import express from "express";
@@ -586,4 +586,3 @@ initializeDatabase().then(() => {
   console.error("Failed to start server:", err);
   process.exit(1);
 });
->>>>>>> 3786829 (Add requirement and validation for Alpha Vantage API key)
