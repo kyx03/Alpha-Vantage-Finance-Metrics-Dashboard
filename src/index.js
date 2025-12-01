@@ -292,7 +292,6 @@ initializeDatabase().then(() => {
   process.exit(1);
 });
 
-=======
 // src/index.js
 import express from "express";
 import path from "path";
@@ -586,3 +585,4 @@ initializeDatabase().then(() => {
   console.error("Failed to start server:", err);
   process.exit(1);
 });
+
