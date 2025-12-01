@@ -2,6 +2,7 @@
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
+import { readFileSync } from "fs";
 import pkg from "pg";
 import { fetchStatement } from "./services/alphaVantage.js";
 
@@ -27,6 +28,48 @@ async function query(text, params) {
     return await client.query(text, params);
   } finally {
     client.release();
+  }
+}
+
+// Initialize database schema
+async function initializeDatabase() {
+  try {
+    // Execute each CREATE TABLE statement separately to avoid multi-statement issues
+    await query(`
+      CREATE TABLE IF NOT EXISTS companies (
+        id SERIAL PRIMARY KEY,
+        symbol VARCHAR(10) UNIQUE NOT NULL,
+        name VARCHAR(255) NOT NULL
+      )
+    `);
+    
+    await query(`
+      CREATE TABLE IF NOT EXISTS financial_statements (
+        company_id INT NOT NULL,
+        fiscal_year INT NOT NULL,
+        revenue NUMERIC,
+        net_income NUMERIC,
+        total_assets NUMERIC,
+        total_liabilities NUMERIC,
+        CONSTRAINT financial_statements_pkey PRIMARY KEY (company_id, fiscal_year),
+        CONSTRAINT fk_company
+          FOREIGN KEY (company_id)
+          REFERENCES companies(id)
+          ON DELETE CASCADE
+      )
+    `);
+    
+    await query(`
+      CREATE TABLE IF NOT EXISTS etl_runs (
+        id SERIAL PRIMARY KEY,
+        run_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    
+    console.log("Database schema initialized successfully");
+  } catch (err) {
+    console.error("Database initialization error:", err.message);
+    throw err;
   }
 }
 
@@ -219,5 +262,32 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(rootDir, "public", "dashboard.html"));
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+const PORT = process.env.PORT || 5000;
+const HOST = '0.0.0.0';
+
+// Validate required environment variables
+function validateEnvironment() {
+  if (!process.env.ALPHA_VANTAGE_API_KEY) {
+    console.warn("⚠️  WARNING: ALPHA_VANTAGE_API_KEY is not set!");
+    console.warn("⚠️  ETL functionality will not work until this is configured.");
+    console.warn("⚠️  Please set ALPHA_VANTAGE_API_KEY in Replit Secrets.");
+  }
+  if (!process.env.DATABASE_URL) {
+    console.error("❌ ERROR: DATABASE_URL is not set!");
+    throw new Error("DATABASE_URL is required");
+  }
+}
+
+// Initialize database and start server
+validateEnvironment();
+initializeDatabase().then(() => {
+  app.listen(PORT, HOST, () => {
+    console.log(`Server running on ${HOST}:${PORT}`);
+    if (!process.env.ALPHA_VANTAGE_API_KEY) {
+      console.warn("⚠️  Remember to set ALPHA_VANTAGE_API_KEY to enable ETL functionality!");
+    }
+  });
+}).catch(err => {
+  console.error("Failed to start server:", err);
+  process.exit(1);
+});
