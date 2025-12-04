@@ -21,7 +21,7 @@ This project fetches financial statements for companies from Alpha Vantage, load
 
 🚀 Getting Started
 1. Clone the Repository
-git clone https://github.com/your-username/finance-dashboard.git
+git clone https://github.com/kyx03/Alpha-Vantage-Finance-Metrics-Dashboard.git
 cd finance-dashboard
 
 🔧 Environment Variables
@@ -230,4 +230,5 @@ Fetch data
 Store in PostgreSQL
 Compute metrics
 Show interactive charts
+
 Running inside Docker
